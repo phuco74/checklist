@@ -75,7 +75,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>안전점검 시스템</title>
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+  <script src="supabase.min.js"></script>
   <style>
     :root {
       --bg: #f4f6f9;
@@ -196,7 +196,7 @@
 
       <button id="login-btn" type="submit" class="btn-primary">로그인</button>
       <div id="login-msg" class="msg hidden"></div>
-      <div class="version">v0.2</div>
+      <div class="version">v0.3</div>
     </form>
   </div>
 
@@ -243,7 +243,11 @@
   </script>
   <script>
     // ===== Supabase 설정: 본인 프로젝트 값으로 교체 =====
-    const SUPABASE_URL = "https://tiaufjnflbctnwluwnpy.supabase.co";
+    // 배포 사이트에서는 같은 주소의 /sb 경로로 접속 (vercel.json 이 Supabase 로 전달)
+    // → 보안 프로그램이 supabase.co 를 막아도 동작. 로컬에서 열 때만 Supabase 주소 직접 사용
+    const SUPABASE_URL = location.protocol.startsWith("http") && location.hostname !== "localhost"
+      ? location.origin + "/sb"
+      : "https://tiaufjnflbctnwluwnpy.supabase.co";
     const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRpYXVmam5mbGJjdG53bHV3bnB5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI4MTE2MDUsImV4cCI6MjEwODM4NzYwNX0.SviQxQHtONBsGUBRhPXGa1ekve2w9aPeCAdv32B-LDU";
     // 아이디 → 로그인 이메일 변환에 쓰는 도메인 (Supabase 사용자 생성 시 동일하게 사용)
     const ID_DOMAIN = "safety.local";
