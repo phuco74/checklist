@@ -88,6 +88,7 @@
       --error-bg: #fdecec;
       --error: #c0392b;
       --admin: #1c7ed6;
+      --ok: #2f9e44;
     }
     * { box-sizing: border-box; }
     body {
@@ -148,6 +149,44 @@
 
     .version { margin-top: 14px; text-align: center; font-size: 12px; color: var(--muted); }
 
+    /* 일일 점검 */
+    .toolbar {
+      display: flex; flex-wrap: wrap; gap: 12px;
+      align-items: flex-end; justify-content: space-between; margin-bottom: 12px;
+    }
+    .toolbar-right { display: flex; align-items: center; gap: 10px; }
+    .toolbar input[type="date"] { width: auto; padding: 8px 10px; }
+    .save-state { font-size: 13px; color: var(--muted); min-width: 70px; text-align: right; }
+    .save-state.error { color: var(--error); }
+    .progress-bar { height: 8px; background: var(--line); border-radius: 999px; overflow: hidden; }
+    .progress-bar > div { height: 100%; width: 0; background: var(--ok); transition: width 0.2s; }
+    .category-title { font-size: 14px; font-weight: 700; color: var(--muted); margin: 22px 0 8px; }
+    .item {
+      border: 1px solid var(--line); border-radius: 10px;
+      padding: 12px 14px; margin-bottom: 8px; background: var(--card);
+    }
+    .item.issue { border-color: #ffa8a8; background: #fff5f5; }
+    .item-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; }
+    .item-text { flex: 1 1 260px; font-size: 15px; line-height: 1.4; }
+    .status-group { display: flex; gap: 6px; }
+    .status-btn {
+      padding: 7px 12px; font-size: 14px; font-weight: 600;
+      background: #fff; border: 1px solid var(--line); color: var(--muted);
+    }
+    .status-btn.on.ok { background: var(--ok); border-color: var(--ok); color: #fff; }
+    .status-btn.on.issue { background: var(--error); border-color: var(--error); color: #fff; }
+    .status-btn.on.na { background: #868e96; border-color: #868e96; color: #fff; }
+    .status-btn:disabled { opacity: 0.6; cursor: default; }
+    .note { margin-top: 10px; font-size: 14px; }
+    .empty { color: var(--muted); padding: 24px 0; text-align: center; }
+    header .title, header .user > *, .status-btn { white-space: nowrap; }
+    @media (max-width: 480px) {
+      header { padding: 12px 16px; }
+      header .title { font-size: 15px; }
+      header .user { gap: 6px; }
+      .panel { padding: 18px 16px; }
+    }
+
     /* 로그인 후 화면 */
     header {
       background: var(--card); border-bottom: 1px solid var(--line);
@@ -196,7 +235,7 @@
 
       <button id="login-btn" type="submit" class="btn-primary">로그인</button>
       <div id="login-msg" class="msg hidden"></div>
-      <div class="version">v0.3</div>
+      <div class="version">v0.4</div>
     </form>
   </div>
 
@@ -212,10 +251,20 @@
     </header>
 
     <main>
-      <!-- 일반 사용자 / 관리자 공통: 내 점검 (다음 단계에서 체크리스트 추가) -->
+      <!-- 일반 사용자 / 관리자 공통: 내 일일 점검 -->
       <section class="panel">
-        <h2>오늘의 점검</h2>
-        <p>체크리스트는 다음 단계에서 추가됩니다.</p>
+        <div class="toolbar">
+          <div>
+            <h2>일일 안전점검</h2>
+            <p id="progress-text">불러오는 중...</p>
+          </div>
+          <div class="toolbar-right">
+            <span id="save-state" class="save-state"></span>
+            <input id="check-date" type="date" aria-label="점검 날짜" />
+          </div>
+        </div>
+        <div class="progress-bar"><div id="progress-fill"></div></div>
+        <div id="checklist"></div>
       </section>
 
       <!-- 관리자 전용: 전체 사용자 -->
@@ -297,6 +346,7 @@
         return;
       }
 
+      me = { id: user.id, ...profile };
       const isAdmin = profile.role === "admin";
       $("user-name").textContent = profile.display_name || profile.username;
       $("user-role").textContent = isAdmin ? "관리자" : "기록자";
@@ -306,7 +356,166 @@
 
       $("login-view").classList.add("hidden");
       $("app-view").classList.remove("hidden");
+
+      const today = todayKST();
+      $("check-date").value = today;
+      $("check-date").max = today;
+      await loadChecklist();
     }
+
+    // ===== 일일 점검 =====
+    const STATUS_LABELS = { ok: "양호", issue: "불량", na: "해당없음" };
+    let me = null;          // 로그인한 사용자 (id + 프로필)
+    let items = [];         // 점검 항목
+    let checks = new Map(); // item_id → 이 날짜의 내 기록
+
+    function todayKST() {
+      return new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Seoul" });
+    }
+
+    function setSaveState(text, isError) {
+      $("save-state").textContent = text;
+      $("save-state").classList.toggle("error", !!isError);
+    }
+
+    async function loadChecklist() {
+      const date = $("check-date").value;
+      $("checklist").innerHTML = '<div class="empty">불러오는 중...</div>';
+      setSaveState("");
+
+      const [itemsRes, checksRes] = await Promise.all([
+        sb.from("checklist_items").select("id, category, content").eq("active", true).order("sort_order"),
+        sb.from("daily_checks").select("item_id, status, note").eq("user_id", me.id).eq("check_date", date),
+      ]);
+      const error = itemsRes.error || checksRes.error;
+      if (error) {
+        $("checklist").innerHTML = "";
+        const div = document.createElement("div");
+        div.className = "empty";
+        div.textContent = "점검 항목을 불러오지 못했습니다. (" + error.message + ")";
+        $("checklist").appendChild(div);
+        return;
+      }
+      items = itemsRes.data;
+      checks = new Map(checksRes.data.map((c) => [c.item_id, c]));
+      renderChecklist();
+    }
+
+    function renderChecklist() {
+      const box = $("checklist");
+      box.innerHTML = "";
+      if (!items.length) {
+        box.innerHTML = '<div class="empty">등록된 점검 항목이 없습니다.</div>';
+      }
+      let category = null;
+      for (const item of items) {
+        if (item.category !== category) {
+          category = item.category;
+          const h = document.createElement("div");
+          h.className = "category-title";
+          h.textContent = category;
+          box.appendChild(h);
+        }
+        box.appendChild(renderItem(item));
+      }
+      updateProgress();
+    }
+
+    function renderItem(item) {
+      const check = checks.get(item.id);
+      const el = document.createElement("div");
+      el.className = "item" + (check && check.status === "issue" ? " issue" : "");
+
+      const row = document.createElement("div");
+      row.className = "item-row";
+      const text = document.createElement("div");
+      text.className = "item-text";
+      text.textContent = item.content;
+      row.appendChild(text);
+
+      const group = document.createElement("div");
+      group.className = "status-group";
+      for (const status of ["ok", "issue", "na"]) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "status-btn " + status + (check && check.status === status ? " on" : "");
+        btn.textContent = STATUS_LABELS[status];
+        btn.addEventListener("click", () => setStatus(item, status, group));
+        group.appendChild(btn);
+      }
+      row.appendChild(group);
+      el.appendChild(row);
+
+      // 불량일 때 내용/조치사항 메모
+      if (check && check.status === "issue") {
+        const note = document.createElement("input");
+        note.className = "note";
+        note.placeholder = "불량 내용 및 조치 사항을 적어주세요";
+        note.value = check.note || "";
+        note.addEventListener("change", () => saveNote(item, note.value.trim()));
+        el.appendChild(note);
+      }
+      return el;
+    }
+
+    function updateProgress() {
+      const done = items.filter((i) => checks.has(i.id)).length;
+      const issues = items.filter((i) => checks.get(i.id)?.status === "issue").length;
+      const pct = items.length ? Math.round((done / items.length) * 100) : 0;
+      $("progress-fill").style.width = pct + "%";
+      $("progress-text").textContent =
+        `${done} / ${items.length} 항목 점검 (${pct}%)` + (issues ? ` · 불량 ${issues}건` : "") +
+        (done === items.length && items.length ? " · 점검 완료" : "");
+    }
+
+    async function setStatus(item, status, group) {
+      const date = $("check-date").value;
+      const current = checks.get(item.id);
+      group.querySelectorAll("button").forEach((b) => (b.disabled = true));
+      setSaveState("저장 중...");
+
+      let error;
+      if (current && current.status === status) {
+        // 같은 버튼을 다시 누르면 선택 취소
+        ({ error } = await sb.from("daily_checks").delete()
+          .eq("user_id", me.id).eq("check_date", date).eq("item_id", item.id));
+        if (!error) checks.delete(item.id);
+      } else {
+        const record = {
+          user_id: me.id, check_date: date, item_id: item.id, status,
+          note: current ? current.note : null, updated_at: new Date().toISOString(),
+        };
+        ({ error } = await sb.from("daily_checks").upsert(record, { onConflict: "user_id,check_date,item_id" }));
+        if (!error) checks.set(item.id, record);
+      }
+
+      if (error) {
+        setSaveState("저장 실패: " + error.message, true);
+        group.querySelectorAll("button").forEach((b) => (b.disabled = false));
+        return;
+      }
+      setSaveState("저장됨");
+      renderChecklist();
+    }
+
+    async function saveNote(item, note) {
+      const current = checks.get(item.id);
+      if (!current) return;
+      setSaveState("저장 중...");
+      const { error } = await sb.from("daily_checks")
+        .update({ note: note || null, updated_at: new Date().toISOString() })
+        .eq("user_id", me.id).eq("check_date", $("check-date").value).eq("item_id", item.id);
+      if (error) {
+        setSaveState("저장 실패: " + error.message, true);
+        return;
+      }
+      current.note = note || null;
+      setSaveState("저장됨");
+    }
+
+    $("check-date").addEventListener("change", () => {
+      if ($("check-date").value) loadChecklist();
+    });
 
     async function loadUsers() {
       const { data, error } = await sb
