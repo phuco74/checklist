@@ -146,6 +146,8 @@
       font-size: 14px; background: var(--error-bg); color: var(--error);
     }
 
+    .version { margin-top: 14px; text-align: center; font-size: 12px; color: var(--muted); }
+
     /* 로그인 후 화면 */
     header {
       background: var(--card); border-bottom: 1px solid var(--line);
@@ -187,13 +189,14 @@
       </div>
 
       <label for="username">아이디</label>
-      <input id="username" autocomplete="username" required />
+      <input id="username" autocomplete="username" autocapitalize="off" spellcheck="false" />
 
       <label for="password">비밀번호</label>
-      <input id="password" type="password" autocomplete="current-password" required />
+      <input id="password" type="password" autocomplete="current-password" />
 
       <button id="login-btn" type="submit" class="btn-primary">로그인</button>
       <div id="login-msg" class="msg hidden"></div>
+      <div class="version">v0.2</div>
     </form>
   </div>
 
@@ -228,6 +231,17 @@
   </div>
 
   <script>
+    // 페이지 오류가 나면 조용히 멈추지 않고 화면에 표시
+    function showFatal(text) {
+      const box = document.getElementById("login-msg");
+      document.getElementById("login-view").classList.remove("hidden");
+      box.textContent = text;
+      box.classList.remove("hidden");
+    }
+    window.addEventListener("error", (e) => showFatal("페이지 오류: " + e.message));
+    window.addEventListener("unhandledrejection", (e) => showFatal("처리 오류: " + (e.reason && e.reason.message || e.reason)));
+  </script>
+  <script>
     // ===== Supabase 설정: 본인 프로젝트 값으로 교체 =====
     const SUPABASE_URL = "https://tiaufjnflbctnwluwnpy.supabase.co";
     const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRpYXVmam5mbGJjdG53bHV3bnB5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI4MTE2MDUsImV4cCI6MjEwODM4NzYwNX0.SviQxQHtONBsGUBRhPXGa1ekve2w9aPeCAdv32B-LDU";
@@ -236,7 +250,23 @@
 
     const $ = (id) => document.getElementById(id);
     const configured = !SUPABASE_URL.includes("YOUR-PROJECT") && !SUPABASE_ANON_KEY.includes("YOUR-");
-    const sb = configured ? supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+    const libLoaded = typeof window.supabase !== "undefined";
+    const sb = configured && libLoaded ? supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+
+    // 응답이 없을 때 무한 대기하지 않도록 제한 시간
+    function withTimeout(promise, ms) {
+      return Promise.race([
+        promise,
+        new Promise((_, reject) => setTimeout(() => reject(new Error("TIMEOUT")), ms)),
+      ]);
+    }
+
+    function describeError(err) {
+      const msg = (err && err.message) || String(err);
+      if (msg === "TIMEOUT") return "서버 응답이 없습니다 (15초 초과). 회사 네트워크나 보안 프로그램이 supabase.co 접속을 막고 있을 수 있습니다.";
+      if (/fetch|network|load failed/i.test(msg)) return "서버에 연결할 수 없습니다. 회사 네트워크나 보안 프로그램이 supabase.co 접속을 막고 있을 수 있습니다. (" + msg + ")";
+      return "오류: " + msg;
+    }
 
     function showMessage(text) {
       $("login-msg").textContent = text;
@@ -259,7 +289,7 @@
       if (error || !profile) {
         await sb.auth.signOut();
         showLogin();
-        showMessage("사용자 프로필을 찾을 수 없습니다. 관리자에게 문의하세요.");
+        showMessage("사용자 프로필을 불러오지 못했습니다. (" + (error ? error.message : "프로필 없음") + ")");
         return;
       }
 
@@ -300,28 +330,43 @@
         showMessage("Supabase 설정이 필요합니다. 코드 상단의 SUPABASE_URL과 SUPABASE_ANON_KEY를 입력하세요.");
         return;
       }
+      if (!libLoaded) {
+        showMessage("로그인 라이브러리를 불러오지 못했습니다. 인터넷 연결이나 광고 차단 프로그램을 확인하세요.");
+        return;
+      }
 
-      const username = $("username").value.trim().toLowerCase();
+      // 아이디를 이메일 형식으로 넣어도 앞부분만 사용
+      const username = $("username").value.trim().toLowerCase().split("@")[0];
       const password = $("password").value;
+      if (!username || !password) {
+        showMessage("아이디와 비밀번호를 모두 입력하세요.");
+        return;
+      }
       if (!/^[a-z0-9._-]+$/.test(username)) {
-        showMessage("아이디는 영문 소문자, 숫자, . _ - 만 사용할 수 있습니다.");
+        showMessage("아이디는 영문 소문자, 숫자, . _ - 만 사용할 수 있습니다. (한/영 키를 확인하세요)");
         return;
       }
 
       $("login-btn").disabled = true;
       $("login-btn").textContent = "로그인 중...";
-      const { data, error } = await sb.auth.signInWithPassword({
-        email: `${username}@${ID_DOMAIN}`,
-        password,
-      });
-      $("login-btn").disabled = false;
-      $("login-btn").textContent = "로그인";
-
-      if (error) {
-        showMessage("아이디 또는 비밀번호가 올바르지 않습니다.");
-        return;
+      try {
+        const { data, error } = await withTimeout(
+          sb.auth.signInWithPassword({ email: `${username}@${ID_DOMAIN}`, password }),
+          15000
+        );
+        if (error) {
+          showMessage(error.code === "invalid_credentials"
+            ? "아이디 또는 비밀번호가 올바르지 않습니다."
+            : describeError(error));
+          return;
+        }
+        await withTimeout(showApp(data.user), 15000);
+      } catch (err) {
+        showMessage(describeError(err));
+      } finally {
+        $("login-btn").disabled = false;
+        $("login-btn").textContent = "로그인";
       }
-      await showApp(data.user);
     });
 
     $("logout-btn").addEventListener("click", async () => {
@@ -336,9 +381,19 @@
         showMessage("Supabase 설정이 필요합니다. 코드 상단의 SUPABASE_URL과 SUPABASE_ANON_KEY를 입력하세요.");
         return;
       }
-      const { data } = await sb.auth.getSession();
-      if (data.session) await showApp(data.session.user);
-      else showLogin();
+      if (!libLoaded) {
+        showLogin();
+        showMessage("로그인 라이브러리를 불러오지 못했습니다. 인터넷 연결이나 광고 차단 프로그램을 확인하세요.");
+        return;
+      }
+      try {
+        const { data } = await sb.auth.getSession();
+        if (data.session) await showApp(data.session.user);
+        else showLogin();
+      } catch (err) {
+        showLogin();
+        showMessage(describeError(err));
+      }
     })();
   </script>
 </body>
